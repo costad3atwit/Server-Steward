@@ -1,0 +1,9 @@
+.env
+config/steward.yaml
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+knowledge/
+compose.local.yaml

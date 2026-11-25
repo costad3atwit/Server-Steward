@@ -1,0 +1,148 @@
+# Server Steward configuration.
+# Copy to config/steward.yaml and edit. Mounted read-only into both containers.
+# The executor will ONLY touch containers named here, and only in the ways described.
+# After editing, ask Steward to "reload config" (or: docker compose restart).
+# A file with errors is refused and the previous config stays active.
+
+# --- Agent settings (used by the steward container) ---------------------------
+llm:
+  # Use a non-thinking (instruct) model. Thinking models spend hundreds of tokens
+  # reasoning before every tool call, which makes replies 10x slower.
+  chat_model: qwen3:4b-instruct-2507-q4_K_M
+  embed_model: nomic-embed-text
+  temperature: 0.2
+  # Passed to Ollama with every request.
+  options:
+    num_ctx: 8192
+    # Layers to put on the GPU. Ollama's automatic fit is conservative and can leave
+    # part of a model on the CPU even when it fits; 99 means "all of them". Remove
+    # this line if the model fails to load (out of memory) on your GPU.
+    num_gpu: 99
+
+# How long a ✅ confirmation stays valid for risky actions.
+confirm_timeout_seconds: 300
+
+# Docs retrieval (RAG) for both the admin agent and the help page.
+rag:
+  top_k: 4
+  # How similar a docs section must be to the question to be used (0 to 1). Too low and
+  # the help page answers from unrelated sections; too high and it forwards questions it
+  # could have answered. Check with: docker compose exec steward python -m steward_agent.cli search help "..."
+  min_score: 0.6
+  # Embeddings run on the CPU so they don't push the chat model off a small GPU.
+  embed_options:
+    num_gpu: 0
+
+# Help page endpoint (POST /help on HELP_BIND). Answers only from docs/help, has no
+# tools, and forwards questions it can't answer to you on Discord.
+help:
+  enabled: true
+  owner_name: the server admin       # how the help page names you, e.g. "Sam"
+  max_question_chars: 500
+  rate_limit_per_minute: 10          # per client IP
+  forward_unanswered: true
+  max_forwards_per_hour: 20
+
+# --- Executor settings ---------------------------------------------------------
+
+# What `status` reports.
+status:
+  # Paths are inside the executor container. Mount host paths read-only under /host
+  # in compose.yaml first.
+  disks:
+    - name: root
+      path: /
+    # - name: media
+    #   path: /host/media
+  # Containers to show in status besides the ones in `stacks`.
+  extra_containers: []
+
+# Stacks the agent may restart. These are EXAMPLES: replace them with your own
+# containers (docker ps --format '{{.Names}}').
+# Steps run in order. `wait_healthy` waits for the
+# container's Docker healthcheck (or for "running" if it has none) before moving on,
+# and aborts the remaining steps if it times out. `retries` restarts that container
+# again (up to 3 times) before giving up.
+stacks:
+  # Example: a VPN container that other containers route through. The VPN must be
+  # healthy before the client restarts, or the client loses its network.
+  torrent:
+    description: VPN (Gluetun) and Transmission. Restarting interrupts active downloads.
+    restart_sequence:
+      - container: gluetun
+        wait_healthy: true
+        timeout_seconds: 60
+        # A VPN server can reject logins (AUTH_FAILED) and Gluetun keeps retrying that
+        # same server. Restarting makes it pick another one.
+        retries: 2
+      - container: transmission
+
+  jellyfin:
+    description: Media server. Restarting interrupts anyone currently streaming.
+    restart_sequence:
+      - container: jellyfin
+
+  immich:
+    description: Photo server and its machine learning worker.
+    restart_sequence:
+      - container: immich_server
+        wait_healthy: true
+        timeout_seconds: 180
+      - container: immich_machine_learning
+
+integrations:
+  immich:
+    enabled: false
+    # Reachable from the executor: join Immich's network in compose.local.yaml.
+    url: http://immich_server:2283
+    # "jobs": PUT /api/jobs/{queue} {"command": "pause"|"resume"}. Check your
+    # Immich version's API docs (<your-immich>/api/docs) if this fails.
+    api_style: jobs
+    queues:
+      - videoConversion
+      - thumbnailGeneration
+      - smartSearch
+      - faceDetection
+    # Longest pause the agent may schedule. Longer requests are rejected.
+    max_pause_hours: 48
+
+  # Each integration below is read only, and off until you enable it. Most need the
+  # executor joined to the app's network: see compose.local.example.yaml.
+
+  # Per-user storage, read with `occ` inside the Nextcloud container (no password needed).
+  nextcloud:
+    enabled: false
+    container: nextcloud-app-1
+
+  # Torrent progress. Login from TRANSMISSION_USER / TRANSMISSION_PASS in .env if set.
+  transmission:
+    enabled: false
+    url: http://gluetun:9091/transmission/rpc
+
+  # Who is streaming. Needs JELLYFIN_API_KEY in .env.
+  jellyfin:
+    enabled: false
+    url: http://jellyfin:8096
+
+  # Who is listening. Needs AUDIOBOOKSHELF_TOKEN (an admin user's API token) in .env.
+  # The container listens on port 80 inside its network, whatever port you publish.
+  audiobookshelf:
+    enabled: false
+    url: http://audiobookshelf:80
+
+  # VPN public IP and location, read from Gluetun's own log.
+  vpn:
+    enabled: false
+    container: gluetun
+
+  # Backup results from your backup script's log (mounted read only). Lines must start
+  # with "YYYY-MM-DD HH:MM:SS". The patterns are regular expressions that say which lines
+  # mean started / finished / failed / one repository done; change them to match your
+  # script. See docs/integrations.md#backup-log.
+  backup_log:
+    enabled: false
+    path: /host/backup/backup.log
+    started_pattern: "===== backup started"
+    finished_pattern: "===== backup finished"
+    failed_pattern: "FAILED: (?P<message>.*)"
+    repo_ok_pattern: "(?P<repo>[\\w-]+): backup OK"

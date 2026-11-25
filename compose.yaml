@@ -1,0 +1,104 @@
+# Server Steward
+#
+# Services:
+#   steward           Discord agent + optional help endpoint. Talks to the LLM and the executor.
+#                     Never gets the Docker socket or integration API keys.
+#   steward-executor  The only service with the Docker socket. Runs fixed, allowlisted verbs
+#                     from config/steward.yaml. Sits on an internal-only network.
+#   ollama            Optional bundled model server (profile "ollama"). Skip it if you
+#                     already run Ollama and set OLLAMA_URL instead.
+#
+# GPU: add compose.gpu.yaml   ->  docker compose -f compose.yaml -f compose.gpu.yaml up -d
+# App integrations: add compose.local.yaml (copy compose.local.example.yaml), which joins
+# the executor to each app's network and mounts files it reads. See docs/integrations.md.
+
+name: server-steward
+
+x-hardening: &hardening
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  tmpfs:
+    - /tmp
+  restart: unless-stopped
+
+services:
+  steward:
+    <<: *hardening
+    image: ghcr.io/${STEWARD_IMAGE_OWNER:-your-github-user}/server-steward:${STEWARD_VERSION:-latest}
+    build: ./steward
+    environment:
+      TZ: ${TZ:-UTC}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?set DISCORD_BOT_TOKEN in .env}
+      DISCORD_OWNER_IDS: ${DISCORD_OWNER_IDS:?set DISCORD_OWNER_IDS in .env}
+      EXECUTOR_URL: http://steward-executor:8080
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:?set EXECUTOR_TOKEN in .env}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+    volumes:
+      - ${STEWARD_CONFIG_DIR:-./config}:/config:ro
+      # Your Markdown knowledge for retrieval: knowledge/admin (owner) and knowledge/help
+      # (public). See knowledge.example/.
+      - ${STEWARD_KNOWLEDGE_DIR:-${STEWARD_DOCS_DIR:-./knowledge}}:/docs:ro
+      - ${STEWARD_DATA_DIR:-./data}/steward:/data
+    ports:
+      # Help endpoint. Bound to localhost by default; put your reverse proxy in front of it.
+      - ${HELP_BIND:-127.0.0.1:8088}:8088
+    extra_hosts:
+      # Lets OLLAMA_URL=http://host.docker.internal:11434 reach an Ollama on the host.
+      - host.docker.internal:host-gateway
+    networks:
+      - default
+      - steward-internal
+      - llm
+    depends_on:
+      - steward-executor
+
+  steward-executor:
+    <<: *hardening
+    image: ghcr.io/${STEWARD_IMAGE_OWNER:-your-github-user}/server-steward-executor:${STEWARD_VERSION:-latest}
+    build: ./executor
+    # Needs root inside the container to open the Docker socket. All capabilities are
+    # dropped and the code only performs the verbs listed in docs/security.md.
+    user: "0:0"
+    environment:
+      TZ: ${TZ:-UTC}
+      EXECUTOR_TOKEN: ${EXECUTOR_TOKEN:?set EXECUTOR_TOKEN in .env}
+      IMMICH_API_KEY: ${IMMICH_API_KEY:-}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      AUDIOBOOKSHELF_TOKEN: ${AUDIOBOOKSHELF_TOKEN:-}
+      TRANSMISSION_USER: ${TRANSMISSION_USER:-}
+      TRANSMISSION_PASS: ${TRANSMISSION_PASS:-}
+    volumes:
+      - ${STEWARD_CONFIG_DIR:-./config}:/config:ro
+      - ${STEWARD_DATA_DIR:-./data}/executor:/data
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      # Disks to report in `status`: mount them read-only under /host and list them
+      # in steward.yaml -> status.disks (or do it in compose.local.yaml). Example:
+      # - /mnt/media:/host/media:ro
+    networks:
+      - steward-internal
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      # Smaller KV cache so a 4B model plus 8k context fits fully on a 4 GB GPU.
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+    volumes:
+      - ${OLLAMA_DATA_DIR:-./data/ollama}:/root/.ollama
+    networks:
+      - llm
+
+networks:
+  # No route to the internet. Only steward and the executor live here.
+  steward-internal:
+    internal: true
+  llm: {}

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Help</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f7cff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+    <header>
+    <h1>Help</h1>
+    <p>Answers to the common questions. If yours isn't here, ask the assistant or message the admin at the bottom of the page.</p>
+  </header>
+
+  <section class="faq">
+    <!-- Your FAQ. Keep it in step with knowledge/help/, which is what the assistant reads. -->
+    <details open>
+      <summary>How do I get access?</summary>
+      <div class="answer">
+        <p>Ask the admin for an invite. You'll get the accounts you need and how to connect.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>An app is asking for a server address. What do I type?</summary>
+      <div class="answer">
+        <div class="addr">
+          <span>Movies and TV</span><code>https://media.example.com</code>
+          <span>Photos</span><code>https://photos.example.com</code>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>A page won't load.</summary>
+      <div class="answer">
+        <ul>
+          <li>Check that you're connected (for example, that your VPN app is switched on).</li>
+          <li>If one service is down but the others work, the server may be restarting. Give it a few minutes.</li>
+          <li>Still stuck? Ask below.</li>
+        </ul>
+      </div>
+    </details>
+  </section>
+
+  <h3 id="assistant-heading">Ask the assistant</h3>
+  <section class="assistant" aria-labelledby="assistant-heading">
+    <p class="intro">The assistant answers from these help pages. It can't change anything on the server or see your accounts, so for anything it can't answer, message the admin below.</p>
+    <div class="chat" id="chat" aria-live="polite"></div>
+    <form id="ask-ai">
+      <label class="sr-only" for="question">Your question</label>
+      <textarea id="question" maxlength="500" rows="2" required placeholder="e.g. How do I watch on my iPad?"></textarea>
+      <div class="row">
+        <button type="submit" id="ask-button">Ask</button>
+        <span class="hint">Enter to send, Shift+Enter for a new line</span>
+      </div>
+    </form>
+  </section>
+
+  <h3 id="message-heading">Message the admin</h3>
+  <form class="ask" id="ask" aria-labelledby="message-heading">
+    <label>Your name
+      <input name="name" autocomplete="name" maxlength="100" required>
+    </label>
+    <label>How should we reach you? <span class="opt">(optional: phone, email or Discord)</span>
+      <input name="contact" autocomplete="email" maxlength="200">
+    </label>
+    <label>Your message
+      <textarea name="message" maxlength="2000" required placeholder="What were you trying to do, and what happened?"></textarea>
+    </label>
+    <button type="submit">Send</button>
+    <p class="status" id="status" role="status"></p>
+  </form>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- assistant -------------------------------------------------------------
+  var chat = document.getElementById("chat");
+  var askForm = document.getElementById("ask-ai");
+  var question = document.getElementById("question");
+  var askButton = document.getElementById("ask-button");
+
+  function bubble(kind, text) {
+    var el = document.createElement("div");
+    el.className = "msg " + kind;
+    el.textContent = text;
+    chat.appendChild(el);
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    return el;
+  }
+
+  function handOff(el, q, label) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "secondary";
+    b.textContent = label || "Send this question to the admin";
+    b.addEventListener("click", function () {
+      var form = document.getElementById("ask");
+      form.elements.message.value = q;
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+      (form.elements.name.value ? form.elements.message : form.elements.name).focus({ preventScroll: true });
+    });
+    el.appendChild(b);
+  }
+
+  async function ask(e) {
+    e.preventDefault();
+    var q = question.value.trim();
+    if (!q || askButton.disabled) return;
+    bubble("you", q);
+    question.value = "";
+    askButton.disabled = true;
+    var pending = bubble("bot pending", "Thinking\u2026");
+
+    // Only sets expectations; the question is sent at the same time.
+    fetch("/api/help/status").then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
+      if (s && !s.ready && pending.classList.contains("pending")) {
+        pending.textContent = "Waking up the assistant. The first answer takes about 30 seconds\u2026";
+      }
+    }).catch(function () {});
+
+    try {
+      var r = await fetch("/api/help", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q })
+      });
+      var data = await r.json().catch(function () { return {}; });
+      pending.classList.remove("pending");
+      if (!r.ok) {
+        pending.textContent = data.error || "Something went wrong. Please message the admin below instead.";
+        return;
+      }
+      pending.textContent = data.answer;
+      var titles = (data.sources || []).map(function (s) { return s.title; })
+        .filter(function (t, i, all) { return all.indexOf(t) === i; });
+      if (titles.length) {
+        var src = document.createElement("div");
+        src.className = "sources";
+        src.textContent = "From: " + titles.join(" \u00b7 ");
+        pending.appendChild(src);
+      }
+      if (!data.answered && !data.forwarded) handOff(pending, q);
+      else if (data.answered) handOff(pending, q, "Not what you needed? Message the admin");
+    } catch (err) {
+      pending.classList.remove("pending");
+      pending.textContent = "The assistant isn't reachable right now. Please message the admin below instead.";
+      handOff(pending, q);
+    } finally {
+      askButton.disabled = false;
+      question.focus();
+    }
+  }
+
+  askForm.addEventListener("submit", ask);
+  question.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      askForm.requestSubmit();
+    }
+  });
+
+  // ---- message the admin -----------------------------------------------------------
+  var msgForm = document.getElementById("ask");
+  var status = document.getElementById("status");
+  msgForm.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var button = msgForm.querySelector("button[type=submit]");
+    button.disabled = true;
+    status.textContent = "Sending\u2026";
+    try {
+      var r = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: msgForm.elements.name.value,
+          contact: msgForm.elements.contact.value,
+          message: msgForm.elements.message.value
+        })
+      });
+      var data = await r.json().catch(function () { return {}; });
+      if (r.ok) {
+        status.textContent = "Sent. The admin will get back to you.";
+        msgForm.elements.message.value = "";
+      } else {
+        status.textContent = data.error || "Couldn't send that. Please text or message the admin directly.";
+      }
+    } catch (err) {
+      status.textContent = "Couldn't reach the server. Please text or message the admin directly. Your message is still in the box so you can copy it.";
+    } finally {
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

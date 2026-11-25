@@ -1,0 +1,35 @@
+# Connect the executor to the apps it reads from, and mount files it reports on.
+# Copy to compose.local.yaml (git-ignored), keep only what you use, and add it to
+# COMPOSE_FILE in .env, e.g.  COMPOSE_FILE=compose.yaml:compose.gpu.yaml:compose.local.yaml
+#
+# The network names below are Docker's defaults for a compose project named after the
+# app (<project>_default). Find yours with:  docker network ls
+# Joining an app's network gives the executor outbound network access through it; the
+# executor still holds no Discord or model credentials.
+services:
+  steward-executor:
+    networks:
+      - steward-internal
+      - immich          # integrations.immich       (job queues, per-user storage)
+      - torrent         # integrations.transmission (http://gluetun:9091 when Transmission runs behind Gluetun)
+      - jellyfin        # integrations.jellyfin     (who is watching)
+      - audiobookshelf  # integrations.audiobookshelf (who is listening)
+    volumes:
+      # integrations.backup_log: your backup script's log, read only
+      - /var/log/my-backup.log:/host/backup/backup.log:ro
+      # status.disks: extra disks to report, read only
+      # - /mnt/media:/host/media:ro
+
+networks:
+  immich:
+    external: true
+    name: immich_default
+  torrent:
+    external: true
+    name: torrent_default
+  jellyfin:
+    external: true
+    name: jellyfin_default
+  audiobookshelf:
+    external: true
+    name: audiobookshelf_default

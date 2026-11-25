@@ -1,0 +1,8 @@
+discord.py>=2.4,<3
+httpx>=0.27,<1
+pydantic>=2.9,<3
+pyyaml>=6,<7
+jsonschema>=4.23,<5
+tzdata
+fastapi>=0.115,<1
+uvicorn>=0.32,<1
